@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 纯矢量图标，仓库里不放任何二进制资源，云端构建和网页上传都更省事 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillAlpha="0.85"
+        android:fillColor="#25F4EE"
+        android:pathData="M40,34 L40,74 L68,54 Z" />
+    <path
+        android:fillColor="#FE2C55"
+        android:pathData="M46,30 L46,78 L82,54 Z" />
+</vector>

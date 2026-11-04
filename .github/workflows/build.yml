@@ -1,0 +1,53 @@
+name: Build TV APK
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  apk:
+    name: assembleDebug
+    runs-on: ubuntu-latest
+    steps:
+      - name: 取代码
+        uses: actions/checkout@v4
+
+      - name: 装 JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: 装 Android SDK（接受许可）
+        uses: android-actions/setup-android@v3
+        with:
+          accept-android-licenses: true
+
+      - name: 装 platform 与 build-tools
+        run: sdkmanager --install "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+
+      - name: 装 Gradle 8.7（AGP 8.5.x 要求 8.7+）
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+          cache-read-only: true
+
+      - name: 构建 debug APK
+        run: gradle --no-daemon --console=plain assembleDebug
+
+      - name: 核对产物
+        run: |
+          ls -l app/build/outputs/apk/debug/
+          test -f app/build/outputs/apk/debug/app-debug.apk
+
+      - name: 上传 APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: douyin-tv-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 30

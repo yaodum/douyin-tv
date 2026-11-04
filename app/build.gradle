@@ -1,0 +1,39 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.qoder.douyintv'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'com.qoder.douyintv'
+        minSdk 26
+        targetSdk 34
+        // 日期式 versionCode：每次重新构建都能直接覆盖安装，不用手动卸载
+        versionCode 20261104
+        versionName '0.1.0'
+    }
+
+    buildTypes {
+        debug {
+            minifyEnabled false
+        }
+        release {
+            minifyEnabled false
+            // 用 debug 签名，个人侧载够用；以后要正经分发再换 keystore
+            signingConfig signingConfigs.debug
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    packagingOptions {
+        resources.excludes += ['META-INF/*']
+    }
+}
+
+// 本工程零第三方依赖，只用系统 WebView，构建快、不易挂
