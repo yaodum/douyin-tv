@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   apk:
@@ -69,3 +69,15 @@ jobs:
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 30
+
+      # Actions 的 artifact 下载需要登录会话，命令行取不到；发成 Release 资产后
+      # 公开仓库有直链，可直接 curl。固定 tag：apk-latest，每次构建覆盖同一个资产名。
+      - name: 发布 APK 到 Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ASSET="app/build/outputs/apk/debug/app-debug.apk#douyin-tv.apk"
+          gh release create apk-latest --title "抖音TV APK" --prerelease \
+            --notes "由 Actions 自动构建，commit ${{ github.sha }}" "$ASSET" \
+            || gh release upload apk-latest "$ASSET" --clobber
+          echo "直链： https://github.com/${{ github.repository }}/releases/download/apk-latest/douyin-tv.apk"
