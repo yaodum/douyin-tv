@@ -43,6 +43,9 @@
     cinema: false,        // 实际生效的影院态（由 want + 页面状态推导）
     fit: store.read(LS_FIT, 'contain'),
     strategy: store.read(LS_STRATEGY, ''),
+    login: '',            // in / out / unknown —— 由 loginState() 推导
+    loginTries: 0,        // 自动点登录的次数，防刷屏
+    loginTriedAt: 0,
     busy: false,          // 正在切下一条，暂停自适应免得抢绑
     hud: null, bar: null, tip: null, tipTimer: 0
   };
@@ -72,7 +75,13 @@
     '.dtv-tip{position:fixed!important;top:24px;left:24px;color:#fff;background:rgba(0,0,0,.62);',
     'padding:10px 16px;border-radius:6px;font:16px/1.4 sans-serif;z-index:2147483647!important;',
     'pointer-events:none!important;opacity:0;transition:opacity .18s}',
-    '.dtv-tip.on{opacity:1}'
+    '.dtv-tip.on{opacity:1}',
+    // 未登录时把二维码提到最上层放大：电视坐一米外也能扫清
+    '.dtv-qr{position:fixed!important;top:50%!important;left:50%!important;',
+    'width:auto!important;height:auto!important;min-width:340px!important;min-height:340px!important;',
+    'transform:translate(-50%,-50%)!important;z-index:2147483646!important;',
+    'background:#fff!important;padding:16px!important;border-radius:8px!important;',
+    'box-shadow:0 0 0 4px #fe2c55!important;object-fit:contain!important;'
   ].join('');
 
   function ensureStyle() {
@@ -165,10 +174,143 @@
 
   /* ------------------------------------------------------------ 影院态：自适应 */
 
-  function loginWall() {
-    return $('[data-e2e="login-modal"], .login-guide-container, #login-modal, [class*="login-guide"]')
-      || ($('img[alt*="二维码"]') && !mainVideo());
+  /* ------------------------------------------------------------ 登录辅助
+   *
+   * 电视上没有键盘，登录只能靠手机扫码，所以未登录时必须主动把二维码推到眼前。
+   * 口径全部走"文案 + 几何特征"，不依赖抖音的类名 —— 类名每次构建都变，
+   * "登录""扫码登录"这几个字不会变。
+   */
+
+  var LOGIN_WORDS = /^\s*(登\s*录|立即登录|登录后查看更多)\s*$/;
+  var QR_TAB_WORDS = /^\s*(扫[码碼]\s*登\s*录|二\s*维\s*码登\s*录|APP\s*扫码)\s*$/;
+
+  /** 找"登录"入口按钮：文本极短且命中关键词、尺寸像个按钮、在视口内。 */
+  function findLoginTrigger() {
+    var all = $$('button, a, div, span');
+    for (var i = 0; i < all.length; i++) {
+      var e = all[i], t = (e.innerText || e.textContent || '');
+      if (t.length > 14 || !LOGIN_WORDS.test(t)) continue;
+      var r = e.getBoundingClientRect();
+      if (r.width < 24 || r.height < 14) continue;
+      if (r.bottom < 0 || r.top > win.innerHeight) continue;
+      return e;
+    }
+    return null;
   }
+
+  /** 按文案找元素（用来点"扫码登录"这种 tab）。 */
+  function findByText(re, maxLen) {
+    var all = $$('div, span, li, button, a, p');
+    for (var i = 0; i < all.length; i++) {
+      var e = all[i], t = (e.innerText || e.textContent || '');
+      if (t.length > (maxLen || 16)) continue;
+      if (!re.test(t)) continue;
+      var r = e.getBoundingClientRect();
+      if (r.width < 8 || r.height < 8) continue;
+      return e;
+    }
+    return null;
+  }
+
+  /** 登录弹窗是否已经打开：出现"扫码登录/手机号登录/验证码登录"这类 tab 文案即算。 */
+  function loginModalOpen() {
+    var el = findByText(QR_TAB_WORDS) || findByText(/^\s*(手机[号號]登录|验证码登录|password|密码登录)\s*$/);
+    if (el) return el;
+    return $('[data-e2e="login-modal"], #login-modal, .login-guide-container, [class*="login-guide"]');
+  }
+
+  /**
+   * 登录态判定。注意 sessionid 是 httpOnly，JS 读不到，所以不能只看 cookie；
+   * 以"页面上还有没有登录按钮"为主，cookie 只作为已登录的强证据。
+   */
+  function loginState() {
+    var c = '';
+    try { c = doc.cookie || ''; } catch (e) {}
+    if (/sessionid=[^;]+|sid_guard=[^;]+|uid_tt=[^;]+/.test(c)) return 'in';
+    if ($('[data-e2e="user-info"], [data-e2e="profile-menu"], [data-e2e="avatar"], [aria-label="我的"]')) return 'in';
+    if (findLoginTrigger()) return 'out';
+    if (loginModalOpen()) return 'out';
+    return 'unknown';
+  }
+
+  /** 找到二维码（同源时是 img/canvas），提到最上层放大，方便隔着一米多扫。 */
+  function enlargeQr() {
+    var pool = $$('img, canvas');
+    var best = null, bestSide = 0;
+    for (var i = 0; i < pool.length; i++) {
+      var e = pool[i], r = e.getBoundingClientRect();
+      var w = r.width, h = r.height;
+      if (w < 70 || h < 70) continue;
+      var ratio = w / h;
+      if (ratio < 0.75 || ratio > 1.35) continue;   // 二维码是方的
+      var alt = (e.getAttribute('alt') || '') + (e.getAttribute('src') || '').slice(0, 40);
+      var looksQr = /二维码|qrcode|qr[^a-z]|captcha/i.test(alt) || e.tagName === 'CANVAS';
+      var score = (looksQr ? 1e6 : 0) + w * h;
+      if (score > bestSide) { bestSide = score; best = e; }
+    }
+    if (!best) return false;
+    best.classList.add('dtv-qr');
+    return true;
+  }
+
+  /**
+   * 打开登录二维码。force=true 时是用户主动按键触发。
+   * 返回值只用于提示文案，不代表登录成功。
+   */
+  function openLogin(force) {
+    var opened = false;
+    if (!loginModalOpen()) {
+      var b = findLoginTrigger();
+      if (b) { try { b.click(); opened = true; } catch (e) {} }
+    } else {
+      opened = true;
+    }
+    // 弹窗里默认可能停在"密码登录/手机号登录"，等它渲染完再切到扫码页
+    win.setTimeout(function () {
+      var tab = findByText(QR_TAB_WORDS);
+      if (tab) { try { tab.click(); } catch (e) {} }
+      win.setTimeout(function () {
+        if (enlargeQr()) tip('二维码已放大，用手机抖音「扫一扫」', 3000);
+        else if (force) tip('登录页已打开：若没看到二维码，请按返回键重试', 3000);
+      }, 400);
+    }, 600);
+    st.loginTriedAt = Date.now();
+    st.loginTries++;
+    report();
+    return opened;
+  }
+
+  /** 登录态发生"变成已登录"这一跳时收尾：清二维码放大、重置尝试次数。 */
+  function onLoggedIn(prev) {
+    if (prev === 'in') return;
+    st.loginTries = 0;
+    var q = $('.dtv-qr'); if (q) q.classList.remove('dtv-qr');
+    tip('已登录，视频开始播放就自动全屏', 2500);
+  }
+
+  /** 自检文本：长按菜单键显示，出问题就靠这一屏定位。 */
+  function diag() {
+    var vids = $$('video'), info = [];
+    for (var i = 0; i < vids.length && i < 4; i++) {
+      var r = vids[i].getBoundingClientRect();
+      info.push('v' + i + ' ' + Math.round(r.width) + 'x' + Math.round(r.height)
+        + (vids[i].paused ? ' 停' : ' 播') + ' ' + (vids[i].videoWidth || 0) + 'px');
+    }
+    var host = scrollHost();
+    var lines = [
+      '诊断 ' + doc.location.href,
+      '登录态: ' + (st.login || loginState()) + '  尝试次数: ' + st.loginTries,
+      '登录按钮: ' + (findLoginTrigger() ? '有' : '无') + '  弹窗: ' + (loginModalOpen() ? '开' : '关'),
+      '视频数: ' + vids.length + ' → ' + (info.join(' / ') || '无'),
+      '滚动容器: ' + (host ? (host.className || host.tagName).slice(0, 40) + ' sh=' + host.scrollHeight + ' ch=' + host.clientHeight : '未找到'),
+      '策略: ' + (st.strategy || '未定') + '  影院: ' + st.cinema + ' 意愿: ' + st.want + ' 画面: ' + st.fit,
+      'UA: ' + (win.__dtvUa || navigator.userAgent).slice(0, 52),
+      'cookie键: ' + (doc.cookie || '').replace(/=[^;]*/g, '=').slice(0, 70)
+    ];
+    toJsBridge('diag', lines.join('\n'));
+    return lines.join('\n');
+  }
+
 
   /** 页面里是否已经有真在解码的视频（videoWidth>0 才算，占位元素是 0）。 */
   function realVideo() {
@@ -253,12 +395,35 @@
     key: function (dir) {
       var k = dir > 0 ? 'ArrowDown' : 'ArrowUp', code = dir > 0 ? 40 : 38;
       var ts = [doc, win, doc.body, doc.documentElement];
+      var v = st.v || mainVideo();
+      if (v) { ts.push(v); ts.push(v.parentNode); }        // 有些实现只监听播放器所在子树
       for (var i = 0; i < ts.length; i++) {
+        if (!ts[i]) continue;
         try {
           ts[i].dispatchEvent(new win.KeyboardEvent('keydown', { key: k, code: k, keyCode: code, which: code, bubbles: true, cancelable: true }));
           ts[i].dispatchEvent(new win.KeyboardEvent('keyup', { key: k, code: k, keyCode: code, which: code, bubbles: true }));
         } catch (e) {}
       }
+    },
+    /* ② 直接点下一条卡片：抖音推荐流点击即激活，绕开所有滚动/键盘实现差异 */
+    card: function (dir) {
+      var v = st.v || mainVideo();
+      if (!v) return;
+      var card = v;
+      while (card && card !== doc.body && !(card.getAttribute && card.getAttribute('data-e2e'))) card = card.parentNode;
+      if (!card || card === doc.body) return;
+      var r = card.getBoundingClientRect();
+      var all = $$('[data-e2e]'), pick = null, pickD = 1e9;
+      for (var i = 0; i < all.length; i++) {
+        var e = all[i];
+        if (e === card || !e.getBoundingClientRect) continue;
+        var er = e.getBoundingClientRect();
+        if (er.width < 120 || er.height < 120) continue;
+        var delta = dir > 0 ? (er.top - r.bottom) : (r.top - er.bottom);
+        // 只接受"紧挨着的那一张"，避免点到远处的推荐位
+        if (delta > -60 && delta < win.innerHeight && Math.abs(delta) < pickD) { pickD = Math.abs(delta); pick = e; }
+      }
+      if (pick) { try { pick.click(); pick.dispatchEvent(new win.MouseEvent('mousedown', { bubbles: true })); pick.dispatchEvent(new win.MouseEvent('mouseup', { bubbles: true })); } catch (e) {} }
     },
     /* ② 整屏滚一格 */
     container: function (dir) {
@@ -288,7 +453,7 @@
     }
   };
 
-  var ORDER = ['key', 'container', 'wheel', 'doc'];
+  var ORDER = ['key', 'card', 'container', 'wheel', 'doc'];
 
   function swipe(dir) {
     if (st.busy) return;
@@ -376,6 +541,7 @@
       + '","paused":' + (v ? (v.paused ? 'true' : 'false') : 'true')
       + ',"video":' + (v ? 'true' : 'false')
       + ',"want":' + (st.want ? 'true' : 'false')
+      + ',"login":"' + (st.login || 'unknown') + '"'
       + ',"url":"' + url + '"}';
     try { b.onState(s); } catch (e) {}
   }
@@ -384,16 +550,25 @@
 
   function tick() {
     if (doc.hidden) return;
-    var v = realVideo(), wall = loginWall();
+    var v = realVideo(), wall = loginModalOpen(), state = loginState();
+    var prev = st.login;
+    st.login = state;
+    onLoggedIn(prev);
+
+    // 未登录 → 主动把二维码推出来（最多 4 次，每次间隔 8 秒），电视上没有键盘只能扫
+    if (state === 'out' && !wall && st.loginTries < 4 && Date.now() - st.loginTriedAt > 8000) {
+      openLogin(false);
+    }
+
     if (st.cinema) {
-      if (!st.busy && (!v || wall)) {
-        // 登录/验证页或视频消失：把画面还给网页，方向键恢复焦点导航
+      if (!st.busy && (!v || wall || state === 'out')) {
+        // 登录页或视频消失：把画面还给网页，方向键恢复焦点导航
         setCinema(false, false);
-        tip(wall ? '检测到登录页，已退出影院态（扫码后自动回到全屏）' : '视频已停止，退出影院态', 2200);
+        tip(wall || state === 'out' ? '需要用手机号扫码登录，二维码已就绪' : '视频已停止，退出影院态', 2600);
       } else {
         rebind();
       }
-    } else if (st.want && v && !wall && !st.busy) {
+    } else if (st.want && v && !wall && state !== 'out' && !st.busy) {
       // 一旦真的有视频在解码且没有弹窗，自动进入全屏
       setCinema(true, false);
     }
@@ -402,13 +577,20 @@
   }
 
   function boot(ua) {
+    if (ua) win.__dtvUa = ua;
     ensureStyle();
     ensureLayered();
+    st.login = loginState();
     if (st.cinema) rebind();
-    if (ua) log('boot ua=' + ua + ' videos=' + $$('video').length + ' want=' + st.want);
+    // 开机先看一眼登录态：未登录就立刻把"登录"入口点开，别等用户去找按钮
+    if (st.login !== 'in') {
+      // 未登录就主动把二维码推到眼前，电视上没有键盘，等着用户自己找按钮不现实
+      win.setTimeout(function () { if (loginState() === 'out') openLogin(false); }, 1200);
+    }
+    if (ua) log('boot ua=' + ua + ' videos=' + $$('video').length + ' want=' + st.want + ' login=' + st.login);
     report();
     tip(st.cinema ? '↑↓ 切视频 · 确认 暂停 · 长按确认 换画面 · 菜单 退影院态'
-                  : '等待视频开始播放会自动全屏', 3000);
+                  : (st.login === 'out' ? '正在准备登录二维码，用手机抖音扫一扫' : '等待视频开始播放会自动全屏'), 3200);
   }
 
   win.setInterval(tick, 500);
@@ -423,6 +605,9 @@
     seek: seek,
     pause: function () { if (st.v) { try { st.v.pause(); } catch (e) {} } },
     setCinema: function (on) { setCinema(!!on, true); tip(on ? '影院态：开' : '影院态：关（方向键恢复网页导航）'); },
+    openLogin: function () { var ok = openLogin(true); tip(ok ? '登录二维码已打开，手机扫码' : '页面上没找到登录入口，可能已经登录'); },
+    diag: function () { return diag(); },
+    loginState: loginState,
     toggleCinema: function () {
       var on = !(st.cinema && st.want);
       setCinema(on, true);

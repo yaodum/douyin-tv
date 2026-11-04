@@ -300,7 +300,16 @@ public class MainActivity extends Activity {
                 break;
             case KeyEvent.KEYCODE_DPAD_LEFT:
                 if (cinema) {
-                    if (down && first) eval("window.__dtv&&__dtv.seek(-10)");
+                    if (down) {
+                        // 长按左键 = 强制打开登录二维码（换号/登录态掉了时用）
+                        if (event.getRepeatCount() >= 5 && !leftConsumedAsLong) {
+                            leftConsumedAsLong = true;
+                            eval("window.__dtv&&__dtv.openLogin()");
+                        }
+                    } else {
+                        if (!leftConsumedAsLong) eval("window.__dtv&&__dtv.seek(-10)");
+                        leftConsumedAsLong = false;
+                    }
                     return true;
                 }
                 break;
@@ -317,6 +326,8 @@ public class MainActivity extends Activity {
                         if (!menuConsumedAsLong) {
                             menuConsumedAsLong = true;
                             showStatus(diagnostics());
+                            // 再把页面侧的 DOM 事实要过来，追加到同一屏（电视上没 adb，只能靠这屏定位问题）
+                            eval("window.__dtv&&__dtv.diag()");
                         }
                     } else if (first) {
                         menuConsumedAsLong = false;
@@ -343,6 +354,8 @@ public class MainActivity extends Activity {
 
     private boolean menuConsumedAsLong = false;
     private boolean centerConsumedAsLong = false;
+    private boolean leftConsumedAsLong = false;
+    private volatile String loginState = "unknown";
 
     private void handleBack() {
         if (customView != null) {
@@ -533,12 +546,11 @@ public class MainActivity extends Activity {
             pi = WebView.getCurrentWebViewPackage();
         } catch (Exception ignored) {
         }
-        return "自检\n"
-                + "内核: " + (pi == null ? "未知" : pi.packageName + " " + pi.versionName) + "\n"
-                + "UA: " + webView.getSettings().getUserAgentString() + "\n"
-                + "地址: " + webView.getUrl() + "\n"
-                + "影院态: " + cinema + "\n"
-                + "页面状态: " + (TextUtils.isEmpty(lastState) ? "（JS 未上报，说明内核不支持或脚本未注入）" : lastState);
+        return "自检 内核:" + (pi == null ? "未知" : pi.packageName + " " + pi.versionName)
+                + "\n地址: " + webView.getUrl()
+                + "\n影院:" + cinema + " 登录:" + loginState
+                + "\nUA: " + webView.getSettings().getUserAgentString()
+                + "\n上报: " + (TextUtils.isEmpty(lastState) ? "（JS 未上报＝脚本没注入或内核不支持）" : lastState);
     }
 
     // ---------------------------------------------------------------- JS 桥
@@ -555,9 +567,21 @@ public class MainActivity extends Activity {
                     try {
                         org.json.JSONObject o = new org.json.JSONObject(json);
                         cinema = o.optBoolean("cinema", cinema);
+                        loginState = o.optString("login", loginState);
                     } catch (Exception e) {
                         Log.w(TAG, "bad state json: " + json);
                     }
+                }
+            });
+        }
+
+        /** 长按菜单键时，页面侧把自己看到的 DOM 事实送过来，追加到自检屏同一层。 */
+        @JavascriptInterface
+        public void diag(final String text) {
+            ui.post(new Runnable() {
+                @Override
+                public void run() {
+                    showStatus(diagnostics() + "\n—— 页面诊断 ——\n" + (text == null ? "" : text));
                 }
             });
         }
