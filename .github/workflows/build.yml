@@ -22,13 +22,31 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: 装 Android SDK（接受许可）
-        uses: android-actions/setup-android@v3
-        with:
-          accept-android-licenses: true
+      # ubuntu-latest 镜像自带 Android SDK（/usr/local/lib/android/sdk）。
+      # 不要用 android-actions/setup-android：它内部执行 `sdkmanager tools`，
+      # 而 Google 已下架 tools 包，在现行镜像上必然失败（runner-images#14748）。
+      - name: 定位预装 Android SDK
+        run: |
+          set -e
+          CAND="/usr/local/lib/android/sdk $HOME/Android/Sdk $ANDROID_HOME"
+          for d in $CAND; do
+            if [ -d "$d" ]; then export SDK="$d"; break; fi
+          done
+          [ -n "$SDK" ] || { echo "找不到 Android SDK"; ls -R /usr/local/lib/android 2>/dev/null; exit 1; }
+          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
+          echo "SDK = $SDK"
+          ls "$SDK"
+          ls "$SDK/platforms" "$SDK/build-tools" 2>/dev/null || true
+          "$SDK/cmdline-tools/latest/bin/sdkmanager" --version 2>/dev/null || echo "no cmdline-tools/latest"
 
-      - name: 装 platform 与 build-tools
-        run: sdkmanager --install "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+      - name: 补齐 platform 与 build-tools（缺了才装）
+        run: |
+          set -e
+          SDKM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          [ -d "$ANDROID_HOME/platforms/android-34" ] || { yes | "$SDKM" --licenses >/dev/null 2>&1 || true; "$SDKM" "platforms;android-34"; }
+          [ -d "$ANDROID_HOME/build-tools/34.0.0" ] || "$SDKM" "build-tools;34.0.0"
+          ls "$ANDROID_HOME/platforms" "$ANDROID_HOME/build-tools"
 
       - name: 装 Gradle 8.7（AGP 8.5.x 要求 8.7+）
         uses: gradle/actions/setup-gradle@v4
